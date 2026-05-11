@@ -1,0 +1,9 @@
+.claude
+
+.env
+
+node_modules/
+
+.env.development
+.env.example
+.env.production

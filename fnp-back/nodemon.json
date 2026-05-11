@@ -1,0 +1,6 @@
+{
+  "watch": ["main.js", "routes", ".env.development"],
+  "ext": "js,json,mjs",
+  "ignore": ["node_modules", ".env.production"],
+  "delay": "300"
+}
