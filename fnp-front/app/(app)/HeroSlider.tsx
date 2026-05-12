@@ -29,7 +29,7 @@ export default function HeroSlider() {
       {SLIDES.map((src, idx) => (
         <div
           key={src}
-          className="absolute inset-0 transition-opacity duration-[1500ms] ease-in-out"
+          className="absolute inset-0 transition-opacity duration-1500 ease-in-out"
           style={{ opacity: idx === active ? 1 : 0 }}
         >
           <Image

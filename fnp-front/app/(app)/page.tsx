@@ -172,7 +172,7 @@ function SiteHeader() {
 function Features() {
   return (
     <section
-      className="relative max-w-[1150px] w-full mx-auto grid grid-cols-1 md:grid-cols-3 font-opensans"
+      className="relative max-w-287.5 w-full mx-auto grid grid-cols-1 md:grid-cols-3 font-opensans"
       style={{ marginTop: "-50px" }}
     >
       {FEATURES.map((f) => (
