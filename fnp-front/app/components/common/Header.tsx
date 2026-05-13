@@ -1,13 +1,14 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import { useState } from "react";
 
 const NAV_LINKS = [
     { href: "/", label: "HOME" },
-    { href: "/", label: "LIVEABOARD" },
-    { href: "/", label: "플플투어" },
-    { href: "/", label: "FLY and PLAY" },
+    { href: "/liveboard", label: "LIVEABOARD" },
+    { href: "/tour", label: "플플투어" },
+    { href: "/fly-and-play", label: "FLY and PLAY" },
 ];
 
 export default function SiteHeader() {
@@ -22,9 +23,9 @@ export default function SiteHeader() {
                 </div>
                 <div className="menu-area flex-24 flex justify-center text-white gap-4">
                     {NAV_LINKS.map((l) => (
-                        <a key={l.label} href={l.href} className="hover:bg-[#52a4da] px-4 py-3 rounded">
+                        <Link key={l.label} href={l.href} className="hover:bg-[#52a4da] px-4 py-3 rounded">
                             <span>{l.label}</span>
-                        </a>
+                        </Link>
                     ))}
                 </div>
                 <div className="share-area flex-11 flex justify-center">
@@ -54,14 +55,14 @@ export default function SiteHeader() {
                 >
                     <nav className="flex flex-col bg-black/60 backdrop-blur-sm">
                         {NAV_LINKS.map((l) => (
-                            <a
+                            <Link
                                 key={l.label}
                                 href={l.href}
                                 onClick={() => setOpen(false)}
                                 className="px-6 py-4 text-white border-t border-white/10 hover:bg-[#52a4da]"
                             >
                                 {l.label}
-                            </a>
+                            </Link>
                         ))}
                     </nav>
                 </div>

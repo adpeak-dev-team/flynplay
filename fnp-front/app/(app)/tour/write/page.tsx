@@ -16,7 +16,7 @@ const ToolbarBtn = ({ onClick, title, children, active }: ToolbarBtnProps) => (
         title={title}
         onMouseDown={(e) => e.preventDefault()}
         onClick={onClick}
-        className={`min-w-[30px] h-8 px-2 flex items-center justify-center text-sm rounded transition ${
+        className={`min-w-7.5 h-8 px-2 flex items-center justify-center text-sm rounded transition ${
             active
                 ? 'bg-sky-100 text-sky-700 shadow-inner ring-1 ring-sky-300'
                 : 'text-gray-700 hover:bg-gray-100'
@@ -61,6 +61,10 @@ const COLORS = [
 export default function TourWritePage() {
     const router = useRouter();
     const editorRef = useRef<HTMLDivElement>(null);
+    // ImageResizeOverlay 가 현재 선택한 이미지를 동기적으로 노출 (정렬/조작 시 우선 타겟)
+    const selectedImgRef = useRef<HTMLImageElement | null>(null);
+    // ImageResizeOverlay 가 자신을 해제할 수 있는 함수를 등록 — 정렬 적용 후 핸들 제거용
+    const deselectImgRef = useRef<(() => void) | null>(null);
     const [title, setTitle] = useState('');
     const [openMenu, setOpenMenu] = useState<'font' | 'size' | 'color' | 'bgcolor' | 'table' | 'link' | 'image' | null>(null);
     const [popoverAlign, setPopoverAlign] = useState<'left' | 'right'>('right');
@@ -282,6 +286,73 @@ export default function TourWritePage() {
         exec(fmt);
     };
 
+    // 이미지에 display:block + margin 으로 정렬 스타일 직접 적용
+    const styleImgAlign = (img: HTMLImageElement, align: 'Left' | 'Center' | 'Right' | 'Full') => {
+        img.style.display = 'block';
+        if (align === 'Center') {
+            img.style.marginLeft = 'auto';
+            img.style.marginRight = 'auto';
+        } else if (align === 'Right') {
+            img.style.marginLeft = 'auto';
+            img.style.marginRight = '0';
+        } else {
+            img.style.marginLeft = '0';
+            img.style.marginRight = 'auto';
+        }
+    };
+
+    // 정렬: ImageResizeOverlay 로 선택된 이미지가 있으면 그것을 최우선 타겟으로 삼고,
+    // 없으면 커서/셀렉션 기준으로 처리 (텍스트는 execCommand, 이미지는 margin 직접 적용)
+    const applyAlign = (align: 'Left' | 'Center' | 'Right' | 'Full') => {
+        const root = editorRef.current;
+        if (!root) return;
+
+        const blockSel = 'p, div, h1, h2, h3, h4, h5, h6, li, blockquote';
+        const findBlock = (node: Node | null): HTMLElement | null => {
+            let el: Node | null = node;
+            while (el && el !== root) {
+                if (el instanceof HTMLElement && el.matches(blockSel)) return el;
+                el = el.parentNode;
+            }
+            return null;
+        };
+
+        // 1) 선택된 이미지가 있으면 그 이미지의 블록을 직접 정렬 (커서 위치 무시)
+        const selImg = selectedImgRef.current;
+        if (selImg && root.contains(selImg)) {
+            const block = findBlock(selImg.parentNode);
+            const alignVal = align === 'Center' ? 'center' : align === 'Right' ? 'right' : align === 'Left' ? 'left' : 'justify';
+            if (block) block.style.textAlign = alignVal;
+            styleImgAlign(selImg, align);
+            // 정렬 후 선택 해제 — 핸들이 이동된 이미지를 안 따라가는 문제 회피
+            deselectImgRef.current?.();
+            return;
+        }
+
+        // 2) fallback: 커서/셀렉션 기준
+        focusEditor();
+        document.execCommand('justify' + align);
+
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0) return;
+        const range = sel.getRangeAt(0);
+
+        const blocks = new Set<HTMLElement>();
+        const startBlock = findBlock(range.startContainer);
+        const endBlock = findBlock(range.endContainer);
+        if (startBlock) blocks.add(startBlock);
+        if (endBlock) blocks.add(endBlock);
+        if (!range.collapsed) {
+            root.querySelectorAll<HTMLElement>(blockSel).forEach((b) => {
+                if (range.intersectsNode(b)) blocks.add(b);
+            });
+        }
+
+        blocks.forEach((b) => {
+            b.querySelectorAll('img').forEach((img) => styleImgAlign(img, align));
+        });
+    };
+
     // 줄간격: 현재 셀렉션이 걸친 모든 블록 요소에 line-height 적용
     const setLineHeight = (lh: string) => {
         focusEditor();
@@ -347,19 +418,16 @@ export default function TourWritePage() {
     const handleInsertImage = (url: string, alt: string) => {
         if (!url) return;
         insertHTML(
-            `<img src="${url}" alt="${alt || ''}" style="max-width:100%;height:auto;margin:8px 0;border-radius:4px;" />`
+            `<p><br/></p><p><img src="${url}" alt="${alt || ''}" style="max-width:100%;height:auto;border-radius:4px;" /></p><p><br/></p>`
         );
         setOpenMenu(null);
     };
 
+    // 업로드 시 base64 가 아닌 blob URL 로 삽입 → 소스 뷰 깔끔. 실제 이미지 데이터는
+    // 브라우저 메모리(Blob)에 보관되며, 등록 시 serializeContent 에서 base64 로 변환됨.
     const handleImageUpload = (file: File) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-            if (typeof reader.result === 'string') {
-                handleInsertImage(reader.result, file.name);
-            }
-        };
-        reader.readAsDataURL(file);
+        const blobUrl = URL.createObjectURL(file);
+        handleInsertImage(blobUrl, file.name);
     };
 
     const toggleSourceView = () => {
@@ -381,12 +449,48 @@ export default function TourWritePage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sourceView]);
 
-    const handleSubmit = () => {
+    // blob: URL → base64(data: URL). 추후 서버 업로드로 교체하면 이 함수만 갈아끼우면 됨.
+    const blobUrlToBase64 = (blobUrl: string): Promise<string> =>
+        fetch(blobUrl)
+            .then((r) => r.blob())
+            .then(
+                (blob) =>
+                    new Promise<string>((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = () => resolve(reader.result as string);
+                        reader.onerror = reject;
+                        reader.readAsDataURL(blob);
+                    })
+            );
+
+    // 본문 HTML 의 blob: 이미지 src 들을 모두 base64 로 치환
+    const serializeContent = async (html: string): Promise<string> => {
+        const doc = new DOMParser().parseFromString(`<div id="__root">${html}</div>`, 'text/html');
+        const imgs = Array.from(doc.querySelectorAll('img')).filter((img) =>
+            (img.getAttribute('src') ?? '').startsWith('blob:')
+        );
+        await Promise.all(
+            imgs.map(async (img) => {
+                const src = img.getAttribute('src');
+                if (!src) return;
+                try {
+                    const b64 = await blobUrlToBase64(src);
+                    img.setAttribute('src', b64);
+                } catch {
+                    // blob URL 이 만료되었거나 접근 불가 — 원본 src 유지
+                }
+            })
+        );
+        return doc.getElementById('__root')?.innerHTML ?? html;
+    };
+
+    const handleSubmit = async () => {
         if (!title.trim()) {
             alert('제목을 입력해 주세요.');
             return;
         }
-        const content = sourceView ? sourceHtml : (editorRef.current?.innerHTML ?? '');
+        const rawHtml = sourceView ? sourceHtml : (editorRef.current?.innerHTML ?? '');
+        const content = await serializeContent(rawHtml);
         // TODO: API 연결
         console.log('SUBMIT', { title, content });
         alert('등록되었습니다. (개발 중: API 연결 필요)');
@@ -425,7 +529,7 @@ export default function TourWritePage() {
                                     saveSelection();
                                 }}
                                 onClick={() => setOpenMenu(openMenu === 'font' ? null : 'font')}
-                                className="h-8 px-2 text-sm text-gray-700 rounded hover:bg-gray-100 flex items-center gap-1 min-w-[100px] justify-between"
+                                className="h-8 px-2 text-sm text-gray-700 rounded hover:bg-gray-100 flex items-center gap-1 min-w-25 justify-between"
                             >
                                 <span>글꼴</span>
                                 <span className="text-xs">▾</span>
@@ -460,7 +564,7 @@ export default function TourWritePage() {
                                     saveSelection();
                                 }}
                                 onClick={() => setOpenMenu(openMenu === 'size' ? null : 'size')}
-                                className="h-8 px-2 text-sm text-gray-700 rounded hover:bg-gray-100 flex items-center gap-1 min-w-[70px] justify-between"
+                                className="h-8 px-2 text-sm text-gray-700 rounded hover:bg-gray-100 flex items-center gap-1 min-w-17.5 justify-between"
                             >
                                 <span>크기</span>
                                 <span className="text-xs">▾</span>
@@ -572,16 +676,16 @@ export default function TourWritePage() {
                         <Divider />
 
                         {/* 정렬 */}
-                        <ToolbarBtn title="왼쪽 정렬" onClick={() => exec('justifyLeft')}>
+                        <ToolbarBtn title="왼쪽 정렬" onClick={() => applyAlign('Left')}>
                             <AlignIcon dir="left" />
                         </ToolbarBtn>
-                        <ToolbarBtn title="가운데 정렬" onClick={() => exec('justifyCenter')}>
+                        <ToolbarBtn title="가운데 정렬" onClick={() => applyAlign('Center')}>
                             <AlignIcon dir="center" />
                         </ToolbarBtn>
-                        <ToolbarBtn title="오른쪽 정렬" onClick={() => exec('justifyRight')}>
+                        <ToolbarBtn title="오른쪽 정렬" onClick={() => applyAlign('Right')}>
                             <AlignIcon dir="right" />
                         </ToolbarBtn>
-                        <ToolbarBtn title="양쪽 정렬" onClick={() => exec('justifyFull')}>
+                        <ToolbarBtn title="양쪽 정렬" onClick={() => applyAlign('Full')}>
                             <AlignIcon dir="justify" />
                         </ToolbarBtn>
 
@@ -718,7 +822,7 @@ export default function TourWritePage() {
                                                     onMouseDown={(e) => e.preventDefault()}
                                                     onMouseEnter={() => setTableHover({ r, c })}
                                                     onClick={() => handleInsertTable(r, c)}
-                                                    className={`w-[18px] h-[18px] border ${
+                                                    className={`w-4.5 h-4.5 border ${
                                                         active ? 'bg-sky-400 border-sky-500' : 'bg-white border-gray-300'
                                                     }`}
                                                 />
@@ -785,12 +889,22 @@ export default function TourWritePage() {
                     {/* 표 편집 보조 툴바 */}
                     <TableSubToolbar editorRef={editorRef} />
 
+                    {/* 이미지 클릭 시 리사이즈 오버레이 */}
+                    <ImageResizeOverlay
+                        editorRef={editorRef}
+                        sourceView={sourceView}
+                        onSelectionChange={(img) => {
+                            selectedImgRef.current = img;
+                        }}
+                        deselectRef={deselectImgRef}
+                    />
+
                     {/* 본문 */}
                     {sourceView ? (
                         <textarea
                             value={sourceHtml}
                             onChange={(e) => setSourceHtml(e.target.value)}
-                            className="w-full min-h-[480px] p-4 font-mono text-xs outline-none resize-y"
+                            className="w-full min-h-120 p-4 font-mono text-xs outline-none resize-y"
                             placeholder="<p>HTML 소스를 입력하세요</p>"
                         />
                     ) : (
@@ -800,7 +914,7 @@ export default function TourWritePage() {
                             suppressContentEditableWarning
                             onMouseUp={saveSelection}
                             onKeyUp={saveSelection}
-                            className="fnp-editor min-h-[480px] p-5 outline-none text-[15px] leading-relaxed text-gray-800"
+                            className="fnp-editor min-h-120 p-5 outline-none text-[15px] leading-relaxed text-gray-800"
                             data-placeholder="내용을 입력하세요. 표 삽입은 툴바의 ▦ 아이콘을 눌러주세요."
                         />
                     )}
@@ -871,9 +985,9 @@ const AlignIcon = ({ dir }: { dir: 'left' | 'center' | 'right' | 'justify' }) =>
         justify: ['w-full', 'w-full', 'w-full', 'w-full'],
     };
     return (
-        <div className="flex flex-col gap-[2px] w-4">
+        <div className="flex flex-col gap-0.5 w-4">
             {lines[dir].map((cls, i) => (
-                <span key={i} className={`h-[2px] bg-gray-600 ${cls}`} />
+                <span key={i} className={`h-0.5 bg-gray-600 ${cls}`} />
             ))}
         </div>
     );
@@ -1132,5 +1246,183 @@ const TableSubToolbar = ({ editorRef }: { editorRef: React.RefObject<HTMLDivElem
             <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={delCol} className="px-2 py-1 bg-white border border-gray-300 rounded hover:bg-red-50 text-red-600">열 삭제</button>
             <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={delTable} className="px-2 py-1 bg-white border border-gray-300 rounded hover:bg-red-50 text-red-600">표 삭제</button>
         </div>
+    );
+};
+
+/* 이미지 클릭 시 외곽선 + 네 모서리 핸들. 핸들을 드래그하면 비율 유지하며 크기 변경 */
+const ImageResizeOverlay = ({
+    editorRef,
+    sourceView,
+    onSelectionChange,
+    deselectRef,
+}: {
+    editorRef: React.RefObject<HTMLDivElement | null>;
+    sourceView: boolean;
+    onSelectionChange?: (img: HTMLImageElement | null) => void;
+    deselectRef?: React.RefObject<(() => void) | null>;
+}) => {
+    const [target, setTarget] = useState<HTMLImageElement | null>(null);
+    const [rect, setRect] = useState<DOMRect | null>(null);
+
+    // target 변경을 부모에게 동기적으로 알림 (정렬 등에서 ref 로 사용)
+    useEffect(() => {
+        onSelectionChange?.(target);
+    }, [target, onSelectionChange]);
+
+    // 부모가 선택 해제를 호출할 수 있도록 ref 에 함수 등록
+    useEffect(() => {
+        if (!deselectRef) return;
+        deselectRef.current = () => setTarget(null);
+        return () => {
+            if (deselectRef.current) deselectRef.current = null;
+        };
+    }, [deselectRef]);
+
+    // 에디터 내 이미지 클릭 → 선택
+    // 에디터 내 다른 곳 클릭 → 해제
+    // 에디터 밖 클릭(툴바 등) → 선택 유지 (정렬 등 조작 가능하도록)
+    // editorRef.current 를 핸들러 내부에서 매번 읽어 stale 참조 회피
+    useEffect(() => {
+        const onMouseDown = (e: MouseEvent) => {
+            const t = e.target as HTMLElement | null;
+            if (!t) return;
+            if (t.closest('[data-img-resize-handle]')) return; // 핸들 클릭은 무시
+            const editor = editorRef.current;
+            if (!editor) return;
+            if (!editor.contains(t)) return; // 에디터 밖이면 선택 유지
+            if (t.tagName === 'IMG') {
+                setTarget(t as HTMLImageElement);
+            } else {
+                setTarget(null);
+            }
+        };
+        document.addEventListener('mousedown', onMouseDown);
+        return () => document.removeEventListener('mousedown', onMouseDown);
+    }, [editorRef]);
+
+    // 선택된 이미지의 위치/크기를 viewport 좌표로 추적
+    // scroll/resize 외에 이미지 자체의 load(blob 로드 완료) / ResizeObserver 까지 감지
+    useEffect(() => {
+        if (!target) {
+            setRect(null);
+            return;
+        }
+        const update = () => setRect(target.getBoundingClientRect());
+        update();
+        // blob URL 등 비동기 로드 직후 크기 재측정
+        if (!target.complete) {
+            target.addEventListener('load', update);
+        }
+        // 이미지 자체의 박스 크기가 바뀔 때(리사이즈/주변 텍스트 편집) 동기화
+        const ro = new ResizeObserver(update);
+        ro.observe(target);
+        window.addEventListener('scroll', update, true);
+        window.addEventListener('resize', update);
+        return () => {
+            target.removeEventListener('load', update);
+            ro.disconnect();
+            window.removeEventListener('scroll', update, true);
+            window.removeEventListener('resize', update);
+        };
+    }, [target]);
+
+    // 이미지가 DOM 에서 제거되면(Delete 등) 선택 해제
+    useEffect(() => {
+        if (!target) return;
+        const editor = editorRef.current;
+        if (!editor) return;
+        const onInput = () => {
+            if (!editor.contains(target)) setTarget(null);
+        };
+        editor.addEventListener('input', onInput);
+        return () => editor.removeEventListener('input', onInput);
+    }, [target, editorRef]);
+
+    // HTML 소스 뷰 전환 시 선택 해제
+    useEffect(() => {
+        if (sourceView) setTarget(null);
+    }, [sourceView]);
+
+    const startResize = (corner: 'tl' | 'tr' | 'bl' | 'br') => (e: React.PointerEvent) => {
+        if (!target) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const startX = e.clientX;
+        const r = target.getBoundingClientRect();
+        const startW = r.width;
+        const isRight = corner === 'br' || corner === 'tr';
+
+        const onMove = (ev: PointerEvent) => {
+            const dx = ev.clientX - startX;
+            const newW = Math.max(40, isRight ? startW + dx : startW - dx);
+            target.style.width = `${newW}px`;
+            target.style.height = 'auto';
+            target.style.maxWidth = '100%';
+            setRect(target.getBoundingClientRect());
+        };
+        const onUp = () => {
+            window.removeEventListener('pointermove', onMove);
+            window.removeEventListener('pointerup', onUp);
+        };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+    };
+
+    if (!target || !rect) return null;
+
+    const handleSize = 12;
+    const handleBase: React.CSSProperties = {
+        position: 'fixed',
+        width: handleSize,
+        height: handleSize,
+        background: '#0ea5e9',
+        border: '2px solid #fff',
+        borderRadius: 2,
+        boxSizing: 'border-box',
+        zIndex: 50,
+    };
+    const handleAt = (top: number, left: number, cursor: string): React.CSSProperties => ({
+        ...handleBase,
+        top: top - handleSize / 2,
+        left: left - handleSize / 2,
+        cursor,
+    });
+
+    return (
+        <>
+            <div
+                style={{
+                    position: 'fixed',
+                    top: rect.top,
+                    left: rect.left,
+                    width: rect.width,
+                    height: rect.height,
+                    border: '2px solid #0ea5e9',
+                    boxSizing: 'border-box',
+                    pointerEvents: 'none',
+                    zIndex: 49,
+                }}
+            />
+            <div
+                data-img-resize-handle
+                style={handleAt(rect.top, rect.left, 'nwse-resize')}
+                onPointerDown={startResize('tl')}
+            />
+            <div
+                data-img-resize-handle
+                style={handleAt(rect.top, rect.right, 'nesw-resize')}
+                onPointerDown={startResize('tr')}
+            />
+            <div
+                data-img-resize-handle
+                style={handleAt(rect.bottom, rect.left, 'nesw-resize')}
+                onPointerDown={startResize('bl')}
+            />
+            <div
+                data-img-resize-handle
+                style={handleAt(rect.bottom, rect.right, 'nwse-resize')}
+                onPointerDown={startResize('br')}
+            />
+        </>
     );
 };
